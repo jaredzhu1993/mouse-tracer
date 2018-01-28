@@ -1,6 +1,7 @@
 <template>
   <canvas
     id="container"
+    ref="container"
     v-bind:width="fullWidth"
     v-bind:height="fullHeight"
   >
@@ -11,102 +12,28 @@
 <script>
 import Rx from 'rxjs/Rx';
 
-//星星角
-const dxyArray = [
-  [-2, 0],
-  [-1.732, 1],
-  [-1, 1.732],
-  [0, 2],
-  [1, 1.732],
-  [1.732, 1],
-  [2, 0],
-  [1.732, -1],
-  [1, -1.732],
-  [0, -2],
-  [-1, -1.732],
-  [-1.732, -1]
-];
-let currentH = 0;
-
-function getColor() {
-  currentH += 1;
-  return {
-      h: currentH % 360,
-      s: '50%',
-      l: '50%',
-      alpha: 0.3,
-  }
-}
-//圆锥角
-function pointDirectionTodirections({
-  x,
-  y
-}) {
-  if (Math.sqrt(Math.pow(x, 2) + Math.pow(y, 2)) > 25 || Math.sqrt(Math.pow(x, 2) + Math.pow(y, 2)) < 6) return void(0);
-  // if (Math.sqrt(Math.pow(x, 2) + Math.pow(y, 2)) > 25) return void(0);
-  if (x === 0) {
-    x += 0.001;
-  }
-  const normalizedX = x / Math.abs(x);
-  //symbol控制圆锥的方向
-  const symbol = x / Math.abs(x);
-  const normalizedY = y / Math.abs(x);
-  const length = 2;
-  const tan = normalizedY / normalizedX;
-  const alpha = Math.atan(tan);
-  const result = [];
-  for (let i = -Math.PI / 4; i <= Math.PI / 4; i += Math.PI / 8) {
-    result.push([
-      length * Math.cos(alpha + i) * symbol,
-      length * Math.sin(alpha + i) * symbol
-    ]);
-  }
-  return result;
-}
-
-function mapDynamicPointer(x1, y1, directions = dxyArray) {
-  const color = getColor();
-  return directions.map(([x, y]) => (
-    Object.assign({}, {
-      x: x1,
-      y: y1,
-      dx: x,
-      dy: y,
-      radius: 5,
-    }, color)
-  ));
-}
-
-function mapStaticPointer(x1, y1) {
-  return Object.assign({}, {
-    x: x1,
-    y: y1,
-    radius: 5,
-  }, getColor());
-}
-
 export default {
   name: 'Tracer',
   data () {
     return {
-      fullHeight: document.documentElement.clientHeight,
-      fullWidth: document.documentElement.clientWidth,
+      fullHeight: 0,
+      fullWidth: 0,
     }
   },
   mounted: function () {
-    const container = document.getElementById('container');
+    const container = this.$refs.container;
     const ctx = container.getContext('2d');
-
+    //初始化canvas大小
+    this.handleResize();
+    //随窗口大小变化，改变canvas的大小
     const resize = Rx.Observable.fromEvent(window, 'resize');
     this.resizeSubscription = resize.subscribe({
       next: this.handleResize,
     })
-
+    //鼠标移动
     const mouseMove = Rx.Observable.fromEvent(container, 'mousemove')
       .map(({clientX, clientY}) => state => {
-        const {mousePosition, down, dynamicPoints,} = state;
-        let direction;
-        let result = Object.assign(
+        return Object.assign(
           {},
           state,
           {
@@ -116,47 +43,17 @@ export default {
             },
           },
         );
-        if(mousePosition) {
-          direction = {
-            x: mousePosition.x - clientX,
-            y: mousePosition.y - clientY,
-          }
-        }
-        if(down) {
-          result = Object.assign(
-            {},
-            result,
-            {
-              dynamicPoints: [
-                ...dynamicPoints,
-                ...mapDynamicPointer(
-                  clientX,
-                  clientY,
-                  pointDirectionTodirections(direction)
-                ),
-              ]
-            }
-          )
-        }
-        return result;
       })
-
+    //鼠标按下
     const mouseDown = Rx.Observable.fromEvent(container, 'mousedown')
       .map(({clientX, clientY}) => state => Object.assign(
         {},
         state,
         {
           down: true,
-          dynamicPoints: [
-            ...state.dynamicPoints,
-            ...mapDynamicPointer(
-              clientX,
-              clientY,
-            ),
-          ]
         }
       ))
-
+    //鼠标抬起
     const mouseUp = Rx.Observable.fromEvent(container, 'mouseup')
       .map(() => state => Object.assign(
         {},
@@ -165,7 +62,7 @@ export default {
           down: false,
         }
       ))
-
+    //鼠标出去
     const mouseOut = Rx.Observable.fromEvent(container, 'mouseout')
       .map(() => state => Object.assign(
         {},
@@ -174,50 +71,73 @@ export default {
           down: false,
         }
       ))
-
+    //每32毫秒向staticPoints增加静态点
     const staticPointer = Rx.Observable.interval(32)
       .map(() => state => {
         const {mousePosition,staticPoints,} = state;
-        if(mousePosition) {
-          return Object.assign(
-            {},
-            state,
-            {
-              staticPoints: [
-                ...staticPoints,
-                mapStaticPointer(mousePosition.x, mousePosition.y)
-              ],
-            }
-          )
-        }
-        return state;
+        return Object.assign(
+          {},
+          state,
+          {
+            staticPoints: [
+              ...staticPoints,
+              mapStaticPointer(mousePosition.x, mousePosition.y)
+            ],
+          }
+        )
       })
-
+    //每隔16毫秒，增加动态点
     const dynamicPointer = Rx.Observable.interval(16)
       .map(() => state => {
-        const {mousePosition,lastPosition,down,dynamicPoints} = state;
-        if(mousePosition === lastPosition && down) {
-          return Object.assign(
-            {},
-            state,
-            {
-              lastPosition: mousePosition,
-              dynamicPoints: [
-                ...dynamicPoints,
-                ...mapDynamicPointer(mousePosition.x, mousePosition.y)
-              ],
-            }
-          )
-        }
-        return Object.assign(
+        const { mousePosition, lastPosition, down, dynamicPoints, } = state;
+        let resultState = Object.assign(
           {},
           state,
           {
             lastPosition: mousePosition,
           }
-        )
+        );
+        if(down) {
+          //鼠标没有移动，增加星形点
+          if(mousePosition === lastPosition) {
+            resultState = Object.assign(
+              {},
+              resultState,
+              {
+                dynamicPoints: [
+                  ...dynamicPoints,
+                  ...mapDynamicPointer(
+                    mousePosition.x,
+                    mousePosition.y
+                  )
+                ],
+              }
+            )
+          } else {
+            //鼠标移动，增加圆锥效果
+            const direction = {
+              x: lastPosition.x - mousePosition.x,
+              y: lastPosition.y - mousePosition.y,
+            }
+            resultState = Object.assign(
+              {},
+              resultState,
+              {
+                dynamicPoints: [
+                  ...dynamicPoints,
+                  ...mapDynamicPointer(
+                    mousePosition.x,
+                    mousePosition.y,
+                    pointDirectionTodirections(direction)
+                  ),
+                ]
+              }
+            )
+          }
+        }
+        return resultState;
       })
-
+    //每隔16毫秒，点的状态发生改变
     const pointerChange = Rx.Observable.interval(16)
       .map(() => state => {
         const { staticPoints, dynamicPoints, } = state;
@@ -260,15 +180,22 @@ export default {
     ).scan(
       (state, changeFn) => changeFn(state),
       {
-        down: false,
-        mousePosition: undefined,
-        lastPosition: undefined,
-        staticPoints: [],
-        dynamicPoints: [],
+        down: false,  //鼠标是否按下
+        mousePosition: {
+          x: 0,
+          y: 0,
+        }, //鼠标的位置
+        lastPosition: {
+          x: 0,
+          y: 0,
+        },  //鼠标上一次的位置
+        staticPoints: [],  //静态点
+        dynamicPoints: [],  //动态点
       }
     );
 
     this.tracerSubscription = tracerState.subscribe(({ staticPoints, dynamicPoints, }) => {
+      //清空canvas，重新画点
       ctx.clearRect(0, 0, this.fullWidth, this.fullHeight);
       [...staticPoints, ...dynamicPoints].forEach((pointer) => {
         const {
@@ -302,6 +229,82 @@ export default {
       this.fullWidth = w.innerWidth || e.clientWidth || g.clientWidth
     },
   },
+}
+
+//星形方向
+const dxyArray = [
+  [-2, 0],
+  [-1.732, 1],
+  [-1, 1.732],
+  [0, 2],
+  [1, 1.732],
+  [1.732, 1],
+  [2, 0],
+  [1.732, -1],
+  [1, -1.732],
+  [0, -2],
+  [-1, -1.732],
+  [-1.732, -1]
+];
+let currentH = 0;
+
+function getColor() {
+  currentH += 1;
+  return {
+      h: currentH % 360,
+      s: '50%',
+      l: '50%',
+      alpha: 0.3,
+  }
+}
+//圆锥方向
+function pointDirectionTodirections({
+  x,
+  y
+}) {
+  //鼠标速度太快或者太慢，都不会有圆锥角效果
+  const mouseSpeed = Math.sqrt(Math.pow(x, 2) + Math.pow(y, 2));
+  if (mouseSpeed > 25 || mouseSpeed < 6) return void(0);
+  //除数不能为0
+  if (x === 0) {
+    x += 0.001;
+  }
+  const normalizedX = x / Math.abs(x);
+  //symbol控制圆锥的方向
+  const symbol = x / Math.abs(x);
+  const normalizedY = y / Math.abs(x);
+  const length = 2;
+  const tan = normalizedY / normalizedX;
+  const alpha = Math.atan(tan);
+  const result = [];
+  for (let i = -Math.PI / 4; i <= Math.PI / 4; i += Math.PI / 8) {
+    result.push([
+      length * Math.cos(alpha + i) * symbol,
+      length * Math.sin(alpha + i) * symbol
+    ]);
+  }
+  return result;
+}
+
+function mapDynamicPointer(x1, y1, directions = dxyArray) {
+  const color = getColor();
+  return directions.map(([x, y]) => (
+    Object.assign({}, {
+      x: x1,
+      y: y1,
+      dx: x,
+      dy: y,
+      radius: 5,
+    }, color)
+  ));
+}
+
+function mapStaticPointer(x1, y1) {
+  return Object.assign({}, {
+    x: x1,
+    y: y1,
+    radius: 5,
+  }, getColor());
 }
 </script>
 
